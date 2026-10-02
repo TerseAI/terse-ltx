@@ -41,7 +41,12 @@ impl<R: Read> Stream<R> {
 
 impl<R: Read> Read for Stream<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let count = self.inner.read(buffer)?;
+        let count = loop {
+            match self.inner.read(buffer) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                result => break result?,
+            }
+        };
         self.offset += count as u64;
         Ok(count)
     }
