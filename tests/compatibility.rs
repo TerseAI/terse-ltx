@@ -1,5 +1,9 @@
-use std::{fs, io, path::PathBuf, process::Command};
-use terse_ltx::{Decoder, Header, Page, compact};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+    process::Command,
+};
+use terse_ltx::{Decoder, Encoder, Header, Page, compact};
 
 #[test]
 fn compacts_go_history_with_updates_and_truncation() -> io::Result<()> {
@@ -29,13 +33,20 @@ fn rejects_corruption_truncation_and_transaction_gaps() {
                 "accepted truncated file at {length}"
             );
         }
-        for offset in [0, 4, 8, 16, 40, 100, 106, valid.len() - 25, valid.len() - 1] {
-            let mut damaged = valid.clone();
-            damaged[offset] ^= 0x40;
-            assert!(
-                compact(vec![damaged.as_slice()], Vec::new()).is_err(),
-                "accepted corruption at {offset}"
-            );
+        let expected = decode(&valid).unwrap();
+        for offset in 0..valid.len() {
+            for bit in 0..8 {
+                let mut damaged = valid.clone();
+                damaged[offset] ^= 1 << bit;
+                let mut output = Vec::new();
+                if compact(vec![damaged.as_slice()], &mut output).is_ok() {
+                    assert_eq!(
+                        decode(&output).unwrap(),
+                        expected,
+                        "undetected corruption at byte {offset}, bit {bit}"
+                    );
+                }
+            }
         }
     }
     let history = history(2, "1");
@@ -52,7 +63,7 @@ fn rejects_corruption_truncation_and_transaction_gaps() {
 
 #[test]
 #[ignore = "requires Go to verify Rust output with superfly/ltx v0.5.2"]
-fn go_restores_rust_compaction() -> io::Result<()> {
+fn go_verifies_rust_compaction_and_encoding() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
     let oracle = directory.path().join("oracle");
     let status = Command::new("go")
@@ -81,7 +92,55 @@ fn go_restores_rust_compaction() -> io::Result<()> {
             );
         }
     }
+    let corpus = directory.path().join("matrix");
+    let generated = Command::new(&oracle).arg("matrix").arg(&corpus).output()?;
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let mut cases = 0;
+    for group in fs::read_dir(&corpus)? {
+        for case in fs::read_dir(group?.path())? {
+            let case = case?.path();
+            verify_case(&oracle, &directory.path().join("rust.ltx"), &case)?;
+            cases += 1;
+        }
+    }
+    assert_eq!(cases, 650);
+    println!("verified {cases} generated histories and {cases} encoder round trips with Go");
     Ok(())
+}
+
+fn verify_case(oracle: &Path, actual: &Path, case: &Path) -> io::Result<()> {
+    let mut paths = fs::read_dir(case)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<io::Result<Vec<_>>>()?;
+    paths.retain(|path| path.file_name().unwrap() != "expected.ltx");
+    paths.sort();
+    let history = paths.iter().map(fs::read).collect::<io::Result<Vec<_>>>()?;
+    let mut output = Vec::new();
+    compact(history.iter().map(Vec::as_slice).collect(), &mut output)
+        .unwrap_or_else(|error| panic!("{}: {error}", case.display()));
+    let expected = case.join("expected.ltx");
+    assert_eq!(
+        decode(&output)?,
+        decode(&fs::read(&expected)?)?,
+        "{}",
+        case.display()
+    );
+    fs::write(actual, output)?;
+    verify_go(oracle, actual, &expected)?;
+    let mut decoder = Decoder::new(history[0].as_slice())?;
+    let mut encoder = Encoder::new(Vec::new(), *decoder.header())?;
+    while let Some(page) = decoder.next_page()? {
+        encoder.write_page(page.number, &page.data)?;
+    }
+    fs::write(
+        actual,
+        encoder.finish(decoder.trailer().unwrap().post_apply_checksum)?,
+    )?;
+    verify_go(oracle, actual, &paths[0])
 }
 
 fn history(flags: u32, first: &str) -> Vec<Vec<u8>> {
@@ -104,4 +163,19 @@ fn decode(bytes: &[u8]) -> io::Result<(Header, Vec<Page>)> {
         pages.push(page);
     }
     Ok((header, pages))
+}
+
+fn verify_go(oracle: &Path, actual: &Path, expected: &Path) -> io::Result<()> {
+    let result = Command::new(oracle)
+        .arg("verify")
+        .arg(actual)
+        .arg(expected)
+        .output()?;
+    assert!(
+        result.status.success(),
+        "{}: {}",
+        expected.display(),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    Ok(())
 }

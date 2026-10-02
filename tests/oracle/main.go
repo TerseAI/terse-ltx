@@ -19,6 +19,8 @@ func main() {
 	switch os.Args[1] {
 	case "generate":
 		err = generate(os.Args[2])
+	case "matrix":
+		err = matrix(os.Args[2])
 	case "verify":
 		err = verify(os.Args[2], os.Args[3])
 	default:
@@ -105,26 +107,47 @@ func page(seed uint32) []byte {
 
 // Exercise the older per-page frame layout with the same Go header and checksum rules.
 func writeFrame(path string, header ltx.Header, pages [][]byte, checksum ltx.Checksum) error {
+	selected := make([]uint32, len(pages))
+	for i := range pages {
+		selected[i] = uint32(i + 1)
+	}
+	data, err := frameBytes(header, selected, pages, checksum)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+func frameBytes(header ltx.Header, selected []uint32, pages [][]byte, checksum ltx.Checksum) ([]byte, error) {
 	var file bytes.Buffer
 	hash := crc64.New(crc64.MakeTable(crc64.ISO))
 	write := func(data []byte) { file.Write(data); hash.Write(data) }
-	raw, _ := header.MarshalBinary()
+	raw, err := header.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
 	write(raw)
 	var index []byte
-	for i, data := range pages {
+	for _, number := range selected {
+		data := pages[number-1]
 		offset := file.Len()
-		raw, _ := (&ltx.PageHeader{Pgno: uint32(i + 1)}).MarshalBinary()
+		raw, err := (&ltx.PageHeader{Pgno: number}).MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
 		write(raw)
 		encoder := lz4.NewWriter(&file)
-		encoder.Apply(lz4.BlockSizeOption(lz4.Block64Kb), lz4.ChecksumOption(true))
+		if err := encoder.Apply(lz4.BlockSizeOption(lz4.Block64Kb), lz4.ChecksumOption(true)); err != nil {
+			return nil, err
+		}
 		if _, err := encoder.Write(data); err != nil {
-			return err
+			return nil, err
 		}
 		if err := encoder.Close(); err != nil {
-			return err
+			return nil, err
 		}
 		hash.Write(data)
-		index = binary.AppendUvarint(index, uint64(i+1))
+		index = binary.AppendUvarint(index, uint64(number))
 		index = binary.AppendUvarint(index, uint64(offset))
 		index = binary.AppendUvarint(index, uint64(file.Len()-offset))
 	}
@@ -135,9 +158,9 @@ func writeFrame(path string, header ltx.Header, pages [][]byte, checksum ltx.Che
 	write(binary.BigEndian.AppendUint64(nil, uint64(checksum)))
 	file.Write(binary.BigEndian.AppendUint64(nil, uint64(ltx.ChecksumFlag)|hash.Sum64()))
 	if err := ltx.NewDecoder(bytes.NewReader(file.Bytes())).Verify(); err != nil {
-		return err
+		return nil, err
 	}
-	return os.WriteFile(path, file.Bytes(), 0644)
+	return file.Bytes(), nil
 }
 
 func verify(actual, expected string) error {
@@ -151,16 +174,38 @@ func verify(actual, expected string) error {
 		return err
 	}
 	defer b.Close()
-	var actualDB, expectedDB bytes.Buffer
 	ad, bd := ltx.NewDecoder(a), ltx.NewDecoder(b)
-	if err := ad.DecodeDatabaseTo(&actualDB); err != nil {
+	if err := ad.DecodeHeader(); err != nil {
 		return err
 	}
-	if err := bd.DecodeDatabaseTo(&expectedDB); err != nil {
+	if err := bd.DecodeHeader(); err != nil {
 		return err
 	}
-	if ad.Header() != bd.Header() || !bytes.Equal(actualDB.Bytes(), expectedDB.Bytes()) {
-		return fmt.Errorf("compacted state differs from Go output")
+	if ad.Header() != bd.Header() {
+		return fmt.Errorf("header differs from Go output")
+	}
+	actualPage, expectedPage := make([]byte, ad.Header().PageSize), make([]byte, bd.Header().PageSize)
+	for {
+		var ah, bh ltx.PageHeader
+		ae, be := ad.DecodePage(&ah, actualPage), bd.DecodePage(&bh, expectedPage)
+		if ae == io.EOF && be == io.EOF {
+			break
+		}
+		if ae != nil || be != nil {
+			return fmt.Errorf("page decoding differs: %v / %v", ae, be)
+		}
+		if ah.Pgno != bh.Pgno || !bytes.Equal(actualPage, expectedPage) {
+			return fmt.Errorf("page differs from Go output")
+		}
+	}
+	if err := ad.Close(); err != nil {
+		return err
+	}
+	if err := bd.Close(); err != nil {
+		return err
+	}
+	if ad.Trailer().PostApplyChecksum != bd.Trailer().PostApplyChecksum {
+		return fmt.Errorf("post-apply checksum differs")
 	}
 	return nil
 }

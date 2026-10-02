@@ -136,6 +136,10 @@ impl Header {
         } else {
             require(post & CHECKSUM_FLAG != 0, "missing post-apply checksum")?;
             require(
+                self.commit != 0 || post == CHECKSUM_FLAG,
+                "nonempty checksum for empty database",
+            )?;
+            require(
                 self.min_txid != 1 || post == calculated,
                 "snapshot checksum mismatch",
             )
