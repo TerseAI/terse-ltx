@@ -21,7 +21,6 @@ impl<R: Read> Stream<R> {
     pub fn field<const N: usize>(&mut self) -> io::Result<[u8; N]> {
         let mut bytes = [0; N];
         self.read_exact(&mut bytes)?;
-        self.hash.update(&bytes);
         Ok(bytes)
     }
 

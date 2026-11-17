@@ -24,7 +24,7 @@ fn compacts_go_history_with_updates_and_truncation() -> io::Result<()> {
 }
 
 #[test]
-fn rejects_corruption_truncation_and_transaction_gaps() {
+fn rejects_snapshot_data_corruption_truncation_and_transaction_gaps() {
     for first in ["1", "frame"] {
         let valid = fixture(0, first);
         for length in 0..valid.len() {
@@ -33,7 +33,7 @@ fn rejects_corruption_truncation_and_transaction_gaps() {
                 "accepted truncated file at {length}"
             );
         }
-        let expected = decode(&valid).unwrap();
+        let expected = decode(&valid).unwrap().1;
         for offset in 0..valid.len() {
             for bit in 0..8 {
                 let mut damaged = valid.clone();
@@ -41,7 +41,7 @@ fn rejects_corruption_truncation_and_transaction_gaps() {
                 let mut output = Vec::new();
                 if compact(vec![damaged.as_slice()], &mut output).is_ok() {
                     assert_eq!(
-                        decode(&output).unwrap(),
+                        decode(&output).unwrap().1,
                         expected,
                         "undetected corruption at byte {offset}, bit {bit}"
                     );

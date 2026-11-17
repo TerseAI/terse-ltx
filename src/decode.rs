@@ -15,6 +15,7 @@ pub struct Decoder<R> {
 }
 
 impl<R: Read> Decoder<R> {
+    /// Reads LTX structure without verifying the file checksum.
     pub fn new(reader: R) -> io::Result<Self> {
         let mut input = Stream::new(reader);
         let header = Header::parse(&input.field()?)?;
@@ -50,7 +51,6 @@ impl<R: Read> Decoder<R> {
         require(flags & !1 == 0, "unknown page flags")?;
         self.header.page(self.last_page, number)?;
         let data = self.read_data(flags)?;
-        self.input.hash.update(&data);
         if self.header.min_txid == 1 && self.header.flags & NO_CHECKSUM == 0 {
             self.checksum = CHECKSUM_FLAG | (self.checksum ^ page_checksum(number, &data));
         }
@@ -88,10 +88,6 @@ impl<R: Read> Decoder<R> {
         let mut bytes = [0; 8];
         self.input.read_exact(&mut bytes)?;
         let file_checksum = u64::from_be_bytes(bytes);
-        require(
-            file_checksum == (self.input.hash.clone().finalize() | CHECKSUM_FLAG),
-            "file checksum mismatch",
-        )?;
         self.header.checksum(post_apply_checksum, self.checksum)?;
         require(
             self.input.read(&mut [0])? == 0,

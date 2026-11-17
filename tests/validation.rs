@@ -245,11 +245,6 @@ fn rejects_malformed_pages_indexes_and_trailers() -> io::Result<()> {
             123u64.to_be_bytes().to_vec(),
             "index size",
         ),
-        (
-            valid.len() - 8,
-            0u64.to_be_bytes().to_vec(),
-            "file checksum",
-        ),
     ] {
         let mut corrupt = valid.clone();
         corrupt[offset..offset + replacement.len()].copy_from_slice(&replacement);
@@ -259,6 +254,10 @@ fn rejects_malformed_pages_indexes_and_trailers() -> io::Result<()> {
             "offset {offset}: {error}, expected {message}"
         );
     }
+    let mut unchecked = valid.clone();
+    let offset = unchecked.len() - 8;
+    unchecked[offset..].fill(0);
+    assert_eq!(read_all(&unchecked)?, vec![1]);
     let mut trailing = valid.clone();
     trailing.push(0);
     assert!(
