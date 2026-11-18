@@ -2,7 +2,9 @@ use std::io;
 
 pub const NO_CHECKSUM: u32 = 2;
 pub const CHECKSUM_FLAG: u64 = 1 << 63;
-pub(crate) const CRC: crc::Crc<u64> = crc::Crc::<u64>::new(&crc::CRC_64_GO_ISO);
+// Every restore and checkpoint hashes every page. Slicing by 16 bytes is about 8x the default table's throughput.
+pub(crate) const CRC: crc::Crc<u64, crc::Table<16>> =
+    crc::Crc::<u64, crc::Table<16>>::new(&crc::CRC_64_GO_ISO);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Header {

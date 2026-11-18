@@ -4,7 +4,7 @@ use std::io::{self, Read, Write};
 pub(crate) struct Stream<T> {
     pub inner: T,
     pub offset: u64,
-    pub hash: crc::Digest<'static, u64>,
+    pub hash: crc::Digest<'static, u64, crc::Table<16>>,
 }
 
 impl<T> Stream<T> {
